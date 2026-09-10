@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%2314161a'/%3E%3Ctext x='32' y='45' font-family='Georgia,Times,serif' font-size='38' font-style='italic' fill='%236fc6a0' text-anchor='middle'%3E%CE%BB%3C/text%3E%3C/svg%3E">
+<title>Report a bug</title>
+<style>
+  :root {
+    --bg: #14161a;
+    --panel: #1b1e24;
+    --panel-border: #2a2e37;
+    --text: #e4e6eb;
+    --text-dim: #8a90a0;
+    --accent: #6fc6a0;
+    --accent-dim: #3f5a4f;
+    --err: #d96666;
+    --mono: "JetBrains Mono", "Fira Code", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+    min-height: 100vh;
+    display: flex;
+    justify-content: center;
+  }
+  main {
+    width: 100%;
+    max-width: 640px;
+    padding: 32px 24px 60px;
+  }
+  a.back {
+    display: inline-block;
+    color: var(--accent);
+    text-decoration: none;
+    font-family: var(--mono);
+    font-size: 0.82rem;
+    margin-bottom: 18px;
+  }
+  a.back:hover { text-decoration: underline; }
+  h1 {
+    font-family: var(--mono);
+    font-size: 1.25rem;
+    margin: 0 0 6px;
+  }
+  p.intro {
+    color: var(--text-dim);
+    font-size: 0.9rem;
+    line-height: 1.55;
+    margin: 0 0 26px;
+  }
+  label {
+    display: block;
+    font-family: var(--mono);
+    font-size: 0.78rem;
+    color: var(--text-dim);
+    margin: 18px 0 6px;
+  }
+  label .opt { font-style: italic; opacity: 0.75; }
+  input[type="text"],
+  textarea {
+    width: 100%;
+    background: var(--panel);
+    border: 1px solid var(--panel-border);
+    color: var(--text);
+    font-family: var(--mono);
+    font-size: 0.86rem;
+    padding: 10px 12px;
+    border-radius: 4px;
+    outline: none;
+  }
+  input:focus, textarea:focus { border-color: var(--accent-dim); }
+  textarea { resize: vertical; line-height: 1.5; }
+  #description { min-height: 90px; }
+  #scriptText { min-height: 140px; }
+  .file-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+  .file-row span {
+    font-family: var(--mono);
+    font-size: 0.78rem;
+    color: var(--text-dim);
+  }
+  button {
+    font-family: var(--mono);
+    font-size: 0.86rem;
+    padding: 11px 22px;
+    border-radius: 4px;
+    border: 1px solid var(--panel-border);
+    background: #21252c;
+    color: var(--text);
+    cursor: pointer;
+  }
+  button:hover { border-color: var(--accent-dim); background: #262b33; }
+  button.primary {
+    background: var(--accent);
+    color: #10231a;
+    border-color: var(--accent);
+    font-weight: 600;
+  }
+  button.primary:hover { background: #7fd4ae; }
+  button:disabled { opacity: 0.5; cursor: default; }
+  .actions { margin-top: 26px; display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+  .status {
+    font-family: var(--mono);
+    font-size: 0.8rem;
+    color: var(--text-dim);
+    line-height: 1.5;
+  }
+  .status.err { color: var(--err); }
+  .status.ok { color: var(--accent); }
+  .note {
+    margin-top: 30px;
+    padding: 12px 14px;
+    border: 1px solid var(--panel-border);
+    border-radius: 4px;
+    font-family: var(--mono);
+    font-size: 0.76rem;
+    color: var(--text-dim);
+    line-height: 1.6;
+  }
+  .sent-box {
+    display: none;
+    margin-top: 18px;
+    padding: 16px;
+    border: 1px solid var(--accent-dim);
+    border-radius: 4px;
+    background: rgba(111, 198, 160, 0.08);
+    color: var(--accent);
+    font-family: var(--mono);
+    font-size: 0.86rem;
+  }
+  .sent-box.visible { display: block; }
+</style>
+</head>
+<body>
+<main>
+  <a class="back" href="index.html">&larr; Back to the transpiler</a>
+  <h1>Report a bug</h1>
+  <p class="intro">
+    Found something the transpiler gets wrong? Describe what happened below.
+    Attaching your script (or pasting it) really helps track down the issue.
+    Hitting send submits the form directly from this page: nothing else opens.
+  </p>
+
+  <form id="bugForm">
+    <label for="description">What went wrong <span class="opt">(required)</span></label>
+    <textarea id="description" name="description" placeholder="E.g. 'Transpiling this script gives: Parse error on line 42 ...' or 'The generated SLua doesn't do X like the LSL version did.'"></textarea>
+
+    <label for="residentName">Your Second Life resident name <span class="opt">(optional, only if you want a reply in-world)</span></label>
+    <input type="text" id="residentName" name="residentName" placeholder="Firstname Resident">
+
+    <label for="fileInput">Attach your .lsl script <span class="opt">(optional, recommended, max 5 MB)</span></label>
+    <div class="file-row">
+      <input type="file" id="fileInput" name="attachment" accept=".lsl,.txt">
+      <span id="fileInfo"></span>
+    </div>
+
+    <label for="scriptText">...or paste the script directly <span class="opt">(optional, used if no file is chosen)</span></label>
+    <textarea id="scriptText" placeholder="Paste your LSL script here if you'd rather not attach a file."></textarea>
+
+    <div class="actions">
+      <button class="primary" type="submit" id="btnSend">Send report</button>
+      <span class="status" id="status"></span>
+    </div>
+  </form>
+
+  <div class="sent-box" id="sentBox">
+    Thanks, your report was sent. If you left your resident name, you may get a reply in-world.
+  </div>
+
+  <div class="note">
+    This form sends directly through <a href="https://web3forms.com" style="color:var(--accent)">Web3Forms</a>,
+    a free form-to-email service: no server of ours is involved, and nothing here stores your data beyond
+    what Web3Forms needs to deliver the email.
+  </div>
+</main>
+<script>
+(function() {
+  var WEB3FORMS_ACCESS_KEY = 'a2c9ed80-b164-4cb1-a1e6-74f1c35303c6';
+
+  var MAX_FILE_BYTES = 5 * 1024 * 1024; // limite del piano gratuito Web3Forms per l'upload semplice
+
+  function byId(id) { return document.getElementById(id); }
+  var form = byId('bugForm');
+  var description = byId('description');
+  var residentName = byId('residentName');
+  var fileInput = byId('fileInput');
+  var fileInfo = byId('fileInfo');
+  var scriptText = byId('scriptText');
+  var status = byId('status');
+  var btnSend = byId('btnSend');
+  var sentBox = byId('sentBox');
+
+  function setStatus(text, cls) {
+    status.textContent = text;
+    status.className = 'status' + (cls ? ' ' + cls : '');
+  }
+
+  fileInput.addEventListener('change', function() {
+    var f = fileInput.files && fileInput.files[0];
+    if (!f) { fileInfo.textContent = ''; return; }
+    var kb = Math.round(f.size / 1024);
+    fileInfo.textContent = f.name + ' (' + kb + ' KB)';
+    if (f.size > MAX_FILE_BYTES) {
+      setStatus('That file is over 5 MB: please paste the script below instead, or trim it.', 'err');
+    } else {
+      setStatus('');
+    }
+  });
+
+  form.addEventListener('submit', function(e) {
+    e.preventDefault();
+
+    if (!description.value.trim()) {
+      setStatus('Please describe what went wrong first.', 'err');
+      description.focus();
+      return;
+    }
+    if (WEB3FORMS_ACCESS_KEY.indexOf('REPLACE_WITH') === 0) {
+      setStatus('This page is not configured yet: the Web3Forms access key is still a placeholder.', 'err');
+      return;
+    }
+    var file = fileInput.files && fileInput.files[0];
+    if (file && file.size > MAX_FILE_BYTES) {
+      setStatus('That file is over 5 MB: please paste the script below instead, or trim it.', 'err');
+      return;
+    }
+
+    var fd = new FormData();
+    fd.append('access_key', WEB3FORMS_ACCESS_KEY);
+    fd.append('subject', 'LSL to SLua Transpiler - bug report');
+    fd.append('from_name', 'LSL2SLua bug report form');
+    fd.append('description', description.value.trim());
+    if (residentName.value.trim()) fd.append('resident_name', residentName.value.trim());
+    if (!file && scriptText.value.trim()) fd.append('pasted_script', scriptText.value.trim());
+    if (file) fd.append('attachment', file);
+
+    btnSend.disabled = true;
+    setStatus('Sending\u2026');
+
+    fetch('https://api.web3forms.com/submit', {
+      method: 'POST',
+      body: fd
+    }).then(function(res) { return res.json(); }).then(function(data) {
+      btnSend.disabled = false;
+      if (data.success) {
+        setStatus('');
+        sentBox.classList.add('visible');
+        form.reset();
+        fileInfo.textContent = '';
+      } else {
+        setStatus('Could not send: ' + (data.message || 'unknown error') + '. Please try again.', 'err');
+      }
+    }).catch(function() {
+      btnSend.disabled = false;
+      setStatus('Could not reach the sending service. Check your connection and try again.', 'err');
+    });
+  });
+})();
+</script>
+</body>
+</html>
