@@ -332,7 +332,7 @@
 <footer>
   Runs entirely in your browser: no script is ever sent to a server. Anything the
   transpiler can't handle is flagged in the warnings, not silently guessed.
-  <br><span style="opacity:0.55;">Build: 2026-09-11 11:22 UTC</span>
+  <br><span style="opacity:0.55;">Build: 2026-09-11 11:28 UTC</span>
 </footer>
 <script>
 (function() {
@@ -885,7 +885,7 @@ class CodeGen {
     this.warnings = [];
     this.scopes = [new Map()]; // scope globale in fondo allo stack
     this.functionReturnTypes = new Map(); // nome funzione utente -> tipo dichiarato
-    this.usedListConcat = false; // true se __lsl_list_concat viene davvero usato
+    this.usedListConcat = false; // true se lsl_listconcat viene davvero usato
   }
   indent() { return '    '.repeat(this.indentLevel); }
   warn(msg) { this.warnings.push(msg); }
@@ -1001,7 +1001,7 @@ class CodeGen {
       header.push('-- helper: concatenates two LSL-style lists (Lua tables), like LSL\'s "+" on lists.');
       header.push('-- LSL also allows concatenating a list with a single non-list value (it is');
       header.push('-- treated as a one-element list), so non-table arguments are wrapped here too.');
-      header.push('local function __lsl_list_concat(a, b)');
+      header.push('local function lsl_listconcat(a, b)');
       header.push('    local r = {}');
       header.push('    if type(a) == "table" then');
       header.push('        for i = 1, #a do r[#r + 1] = a[i] end');
@@ -1291,7 +1291,7 @@ class CodeGen {
     if (e.op === '+') {
       if (this.looksListy(e.left) || this.looksListy(e.right)) {
         this.usedListConcat = true;
-        return `__lsl_list_concat(${l}, ${r})`;
+        return `lsl_listconcat(${l}, ${r})`;
       }
       if (this.looksLikeString(e.left) || this.looksLikeString(e.right)) {
         return `(${l} .. ${r})`;
