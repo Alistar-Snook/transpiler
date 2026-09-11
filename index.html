@@ -222,6 +222,7 @@
     border-radius: 3px;
   }
 
+  /* --- syntax highlighting palette (VS Code "Dark+"-inspired) --- */
   .tok-keyword   { color: #569cd6; }
   .tok-const     { color: #569cd6; }
   .tok-string    { color: #ce9178; }
@@ -285,7 +286,7 @@
 <header>
   <div>
     <h1>LSL <span class="arrow">&rarr;</span> SLua Transpiler</h1>
-    <p>Paste an LSL script, hit "Transpile" and review the SLua draft before using it in-world.</p>
+    <p>Paste an LSL script, hit "Transpile" &mdash; review the SLua draft before using it in-world.</p>
   </div>
   <a class="report-link" href="report-bug.html">Report a bug</a>
 </header>
@@ -331,11 +332,12 @@
 <footer>
   Runs entirely in your browser: no script is ever sent to a server. Anything the
   transpiler can't handle is flagged in the warnings, not silently guessed.
-  <br><span style="opacity:0.55;">Build: 2026-09-09 18:51 UTC</span>
+  <br><span style="opacity:0.55;">Build: 2026-09-11 10:38 UTC</span>
 </footer>
 <script>
 (function() {
 'use strict';
+// ==== lexer ====
 
 class LexError extends Error {
   constructor(message, line) {
@@ -479,6 +481,7 @@ function tokenize(src) {
 }
 
 
+// ==== parser ====
 
 class ParseError extends Error {
   constructor(message, line) {
@@ -529,6 +532,7 @@ class Parser {
     return this.at('KEYWORD') && TYPE_KEYWORDS.has(this.cur().value);
   }
 
+  // ---------- Program ----------
   parseProgram() {
     const globals = [];
     const functions = [];
@@ -593,6 +597,7 @@ class Parser {
     return { kind: 'StateDecl', name, events };
   }
 
+  // ---------- Statements ----------
   parseBlock() {
     this.expectPunct('{');
     const stmts = [];
@@ -709,6 +714,7 @@ class Parser {
     return { kind: 'For', init, test, update, body };
   }
 
+  // ---------- Expressions (Pratt parser) ----------
   parseExpr() { return this.parseAssign(); }
 
   parseAssign() {
@@ -807,6 +813,11 @@ class Parser {
       return { kind: 'ListLiteral', items };
     }
     if (this.atPunct('<')) {
+      // vector <x,y,z> or rotation <x,y,z,s>
+      // NB: dentro <...> non si ammettono operatori di confronto a livello
+      // superiore (precedenza 7: < <= > >=), altrimenti il '>' di chiusura
+      // verrebbe letto come operatore "maggiore di" invece che come fine
+      // del letterale. E' un'ambiguita' nota della grammatica LSL.
       this.advance();
       const items = [this.parseBinary(8)];
       while (this.atPunct(',')) { this.advance(); items.push(this.parseBinary(8)); }
@@ -824,12 +835,17 @@ function parse(tokens) {
 }
 
 
+// ==== codegen ====
+
+// parole riservate in Lua/Luau che in LSL sono identificatori legittimi
 const LUA_RESERVED = new Set([
   'and', 'break', 'do', 'else', 'elseif', 'end', 'false', 'for', 'function',
   'if', 'in', 'local', 'nil', 'not', 'or', 'repeat', 'return', 'then',
   'true', 'until', 'while', 'continue', 'table', 'string', 'math', 'type'
 ]);
 
+// funzioni ll* comuni il cui tipo di ritorno e' noto: aiutano l'euristica
+// stringa/numero a non segnalare falsi positivi (es. llGetUnixTime() + x)
 const LL_NUMERIC_RETURN = new Set([
   'GetUnixTime', 'GetTime', 'GetAndResetTime', 'GetTimeOfDay', 'GetGMTclock', 'GetWallclock',
   'StringLength', 'GetListLength', 'GetFreeMemory', 'GetUsedMemory', 'GetFreeURLs',
@@ -869,6 +885,7 @@ class CodeGen {
     this.warnings = [];
     this.scopes = [new Map()]; // scope globale in fondo allo stack
     this.functionReturnTypes = new Map(); // nome funzione utente -> tipo dichiarato
+    this.usedListConcat = false; // true se __lsl_list_concat viene davvero usato
   }
   indent() { return '    '.repeat(this.indentLevel); }
   warn(msg) { this.warnings.push(msg); }
@@ -883,27 +900,24 @@ class CodeGen {
     return null;
   }
 
+  // rinomina identificatori che collidono con keyword Lua (spec Suzanna: aggiunge _t)
   safeName(name) {
     return LUA_RESERVED.has(name) ? name + '_t' : name;
   }
 
   genProgram(ast) {
+    // registra i tipi di ritorno delle funzioni utente prima di generare
+    // qualsiasi cosa, cosi' le chiamate a queste funzioni sono classificabili
+    // (es. "list ButtonUpdate(...)" usato in una concatenazione di liste)
     for (const f of ast.functions) {
       if (f.returnType) this.functionReturnTypes.set(f.name, f.returnType);
     }
 
+    // il corpo viene generato PRIMA dell'intestazione: solo cosi' sappiamo,
+    // al momento di scrivere l'header, se e' stato davvero usato l'helper
+    // per la concatenazione di liste (this.usedListConcat viene impostato
+    // dentro genBinary quando serve) e possiamo includerlo solo in quel caso
     const lines = [];
-    lines.push('-- Auto-generated from LSL to SLua.');
-    lines.push('-- Always review the result before using it in-world.');
-    lines.push('');
-    lines.push('-- helper: concatenates two LSL-style lists (Lua tables), like LSL\'s "+" on lists');
-    lines.push('local function __lsl_list_concat(a, b)');
-    lines.push('    local r = {}');
-    lines.push('    for i = 1, #a do r[#r + 1] = a[i] end');
-    lines.push('    for i = 1, #b do r[#r + 1] = b[i] end');
-    lines.push('    return r');
-    lines.push('end');
-    lines.push('');
 
     // variabili globali
     for (const g of ast.globals) {
@@ -912,6 +926,9 @@ class CodeGen {
     }
     if (ast.globals.length) lines.push('');
 
+    // dichiarazioni forward per tutte le funzioni globali (permette la
+    // mutua ricorsione, dato che in Lua le funzioni vanno dichiarate
+    // prima di essere usate)
     if (ast.functions.length) {
       for (const f of ast.functions) lines.push(`local ${this.safeName(f.name)}`);
       lines.push('');
@@ -923,6 +940,7 @@ class CodeGen {
       lines.push('');
     }
 
+    // raccogli tutti i nomi di evento usati in tutti gli stati
     const eventNames = new Set();
     for (const s of ast.states) for (const e of s.events) eventNames.add(e.name);
 
@@ -948,6 +966,8 @@ class CodeGen {
       lines.push('');
     }
 
+    // dispatcher: una funzione globale per ogni evento incontrato, che
+    // inoltra alla tabella dello stato corrente (se lo stato la definisce)
     for (const evName of eventNames) {
       lines.push(`function ${evName}(...)`);
       lines.push(this.indent() + `    local handler = states[current_state].${evName}`);
@@ -971,7 +991,24 @@ class CodeGen {
     lines.push('    states.default.state_entry()');
     lines.push('end');
 
-    return lines.join('\n');
+    // header, costruito ora che sappiamo se l'helper di concatenazione liste
+    // e' stato effettivamente usato da qualche parte nel corpo generato
+    const header = [];
+    header.push('-- Auto-generated from LSL to SLua.');
+    header.push('-- Always review the result before using it in-world.');
+    header.push('');
+    if (this.usedListConcat) {
+      header.push('-- helper: concatenates two LSL-style lists (Lua tables), like LSL\'s "+" on lists');
+      header.push('local function __lsl_list_concat(a, b)');
+      header.push('    local r = {}');
+      header.push('    for i = 1, #a do r[#r + 1] = a[i] end');
+      header.push('    for i = 1, #b do r[#r + 1] = b[i] end');
+      header.push('    return r');
+      header.push('end');
+      header.push('');
+    }
+
+    return header.concat(lines).join('\n');
   }
 
   genGlobalVarDecl(g) {
@@ -1007,6 +1044,7 @@ class CodeGen {
     return lines.join('\n');
   }
 
+  // ---------- Statement ----------
   genStatement(stmt) {
     const ind = this.indent();
     switch (stmt.kind) {
@@ -1020,6 +1058,9 @@ class CodeGen {
       }
       case 'VarDeclStmt': {
         return stmt.decls.map(d => {
+          // il valore va generato PRIMA di dichiarare la variabile nello
+          // scope, cosi' un'espressione come "integer x = x_precedente" non
+          // si auto-referenzia
           const val = d.init ? this.genExpr(d.init) : this.defaultValueFor(stmt.varType);
           this.declareVar(d.name, stmt.varType);
           return `${ind}local ${this.safeName(d.name)} = ${val}`;
@@ -1059,6 +1100,8 @@ class CodeGen {
         this.indentLevel++;
         out += this.genStatement(stmt.body) + '\n';
         this.indentLevel--;
+        // repeat...until exits when the condition is TRUE in Lua,
+        // while LSL's do-while continues while it's true -> negate the condition
         out += `${ind}until not (${this.genExpr(stmt.test)})`;
         return out;
       }
@@ -1089,6 +1132,10 @@ class CodeGen {
     }
   }
 
+  // genera un'espressione usata in "posizione statement" (uno statement a se',
+  // oppure una delle clausole init/update di un for): qui '++'/'--' sono
+  // legittimi anche per LSL, quindi li traduciamo in un'assegnazione invece
+  // di passare per genExpr (che li considera "annidati" e li segnala)
   genExprStatement(expr) {
     if (expr.kind === 'PreIncDec' || expr.kind === 'PostIncDec') {
       const t = this.genExpr(expr.target);
@@ -1098,6 +1145,7 @@ class CodeGen {
     return this.genExpr(expr);
   }
 
+  // ---------- Expression ----------
   genExpr(e) {
     switch (e.kind) {
       case 'Number': return e.value;
@@ -1139,6 +1187,8 @@ class CodeGen {
     }
   }
 
+  // euristica: capisce se un nodo espressione e' "probabilmente stringa"
+  // guardando literal di stringa o cast a (string)/(key)
   looksLikeString(node) {
     if (node.kind === 'String') return true;
     if (node.kind === 'Cast' && (node.targetType === 'string' || node.targetType === 'key')) return true;
@@ -1175,6 +1225,8 @@ class CodeGen {
     return false;
   }
 
+  // euristica: capisce se un nodo espressione e' una LISTA (LSL usa '+'
+  // anche per concatenare liste, come le stringhe)
   looksListy(node) {
     if (node.kind === 'ListLiteral') return true;
     if (node.kind === 'Cast' && node.targetType === 'list') return true;
@@ -1191,6 +1243,8 @@ class CodeGen {
     return false;
   }
 
+  // euristica: capisce se un nodo espressione e' un VECTOR o una ROTATION
+  // (LSL usa '+'/'-'/'*' anche per la matematica vettoriale)
   looksVectorish(node) {
     if (node.kind === 'VectorLiteral' || node.kind === 'RotationLiteral') return true;
     if (node.kind === 'Cast' && (node.targetType === 'vector' || node.targetType === 'rotation')) return true;
@@ -1226,6 +1280,7 @@ class CodeGen {
     const r = this.genExpr(e.right);
     if (e.op === '+') {
       if (this.looksListy(e.left) || this.looksListy(e.right)) {
+        this.usedListConcat = true;
         return `__lsl_list_concat(${l}, ${r})`;
       }
       if (this.looksLikeString(e.left) || this.looksLikeString(e.right)) {
@@ -1234,6 +1289,9 @@ class CodeGen {
       const numeric = this.looksNumeric(e.left) && this.looksNumeric(e.right);
       const vectorish = this.looksVectorish(e.left) && this.looksVectorish(e.right);
       if (!numeric && !vectorish) {
+        // we can't statically determine the type (e.g. variables
+        // whose declared type isn't tracked): we leave '+' and
+        // flag it, so the user can check manually
         this.warn(`Operator '+' could not be resolved as either string or number with certainty in "${l} + ${r}": check whether it should be '..'.`);
       }
     }
@@ -1274,6 +1332,9 @@ class CodeGen {
     const target = this.genExpr(e.target);
     if (e.op === '=') return `${target} = ${this.genExpr(e.value)}`;
     if (e.op === '+=') {
+      // '+=' deve passare per la stessa logica del '+' normale: puo' essere
+      // somma numerica, concatenazione di stringhe, concatenazione di liste
+      // o matematica vettoriale, non solo un banale operatore aritmetico
       const synthetic = { kind: 'Binary', op: '+', left: e.target, right: e.value };
       return `${target} = ${this.genBinary(synthetic)}`;
     }
@@ -1289,6 +1350,14 @@ function generate(ast) {
 }
 
 
+// ==== highlighter ====
+
+// Evidenziatore sintattico leggero per l'output SLua del transpiler.
+// Non e' un highlighter Lua generico: conosce le convenzioni usate dal
+// nostro codegen (namespace ll./bit32./vector./rotation., tabella
+// "states", funzione "state()") per colorare in modo semanticamente
+// utile invece che puramente lessicale.
+
 const LUA_KEYWORDS = new Set([
   'local', 'function', 'end', 'if', 'then', 'else', 'elseif', 'while',
   'do', 'for', 'in', 'return', 'and', 'or', 'not', 'repeat', 'until', 'break'
@@ -1301,6 +1370,9 @@ function escapeHtml(s) {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
+// tokenizzatore Lua semplificato (stringhe, commenti, numeri, identificatori,
+// operatori/punteggiatura) — sufficiente per codice generato da noi, non per
+// Lua arbitrario scritto a mano con ogni stranezza sintattica
 function tokenizeLua(src) {
   const tokens = [];
   let i = 0;
@@ -1366,6 +1438,8 @@ function tokenizeLua(src) {
   return tokens;
 }
 
+// classifica un identificatore guardando il contesto (token precedenti/successivi
+// gia' emessi/non ancora emessi) per assegnargli una categoria semantica
 function classifyIdent(tokens, idx) {
   const tok = tokens[idx];
   const name = tok.v;
@@ -1408,6 +1482,8 @@ function classifyIdent(tokens, idx) {
     const afterEq = nextMeaningful(tokens.indexOf(next));
     if (afterEq && afterEq.t === 'ident' && afterEq.v === 'function') return 'func-name';
   }
+  // pattern "nomeevento = function(" dentro la tabella states (stessa regola sopra copre gia')
+  // pattern "function nome(" -> dichiarazione funzione dispatcher
   if (prev && prev.t === 'ident' && prev.v === 'function') return 'func-name';
 
   return 'ident';
@@ -1433,6 +1509,11 @@ function highlightLua(code) {
   return out;
 }
 
+// ===================== LSL (input) highlighter =====================
+// Evidenzia il codice LSL grezzo (non ancora transpilato). Usa la stessa
+// palette del pannello di output, per dare continuita' visiva: le funzioni
+// ll* e i tipi sono trattati come "built-in", gli eventi come "funzioni",
+// 'state'/'default' e i nomi di stato come categoria "state".
 
 const LSL_CONTROL_KEYWORDS = new Set(['if', 'else', 'while', 'do', 'for', 'return', 'jump']);
 const LSL_STATE_KEYWORDS = new Set(['state', 'default']);
@@ -1450,7 +1531,9 @@ const LSL_EVENT_NAMES = new Set([
 const LSL_BOOL = new Set(['TRUE', 'FALSE']);
 const ALL_CAPS_CONST_RE = /^[A-Z][A-Z0-9_]+$/; // heuristica per costanti predefinite (ALL_SIDES, PI, ...)
 
-
+// tokenizzatore per LSL grezzo: analogo a tokenizeLua ma con le regole
+// lessicali di LSL (stringhe solo con ", numeri con eventuale suffisso f,
+// niente stringhe multi-carattere di apici singoli)
 function tokenizeLSL(src) {
   const tokens = [];
   let i = 0;
@@ -1559,6 +1642,8 @@ function highlightLSL(code, errorLine) {
   let out = '';
   let line = 1; // riga (1-based) del token che stiamo per emettere
 
+  // avvolge l'HTML di un token nel marcatore di errore se la riga corrente
+  // corrisponde a quella segnalata dal parser/lexer
   function wrap(html, onError) {
     return onError ? `<span class="err-line">${html}</span>` : html;
   }
