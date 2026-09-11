@@ -332,7 +332,7 @@
 <footer>
   Runs entirely in your browser: no script is ever sent to a server. Anything the
   transpiler can't handle is flagged in the warnings, not silently guessed.
-  <br><span style="opacity:0.55;">Build: 2026-09-11 11:43 UTC</span>
+  <br><span style="opacity:0.55;">Build: 2026-09-11 18:04 UTC</span>
 </footer>
 <script>
 (function() {
@@ -905,6 +905,25 @@ class CodeGen {
     return LUA_RESERVED.has(name) ? name + '_t' : name;
   }
 
+  // ricerca ricorsiva nell'AST di una chiamata a una funzione llDetected*
+  // (llDetectedKey, llDetectedName, ecc.), per segnalare il warning sulla
+  // lista "events" solo quando serve davvero, non su ogni evento di rilevamento
+  containsDetectedCall(node) {
+    if (!node || typeof node !== 'object') return false;
+    if (node.kind === 'Call' && node.callee && node.callee.kind === 'Ident'
+      && /^llDetected/.test(node.callee.name)) return true;
+    for (const key in node) {
+      if (key === 'kind') continue;
+      const val = node[key];
+      if (Array.isArray(val)) {
+        for (const item of val) if (this.containsDetectedCall(item)) return true;
+      } else if (val && typeof val === 'object') {
+        if (this.containsDetectedCall(val)) return true;
+      }
+    }
+    return false;
+  }
+
   genProgram(ast) {
     // registra i tipi di ritorno delle funzioni utente prima di generare
     // qualsiasi cosa, cosi' le chiamate a queste funzioni sono classificabili
@@ -944,52 +963,84 @@ class CodeGen {
     const eventNames = new Set();
     for (const s of ast.states) for (const e of s.events) eventNames.add(e.name);
 
-    // tabella "states": ogni stato è una tabella evento -> funzione
-    lines.push('local current_state = "default"');
-    lines.push('local states = {}');
+    // eventi LSL "a lista di rilevamento" (touch*/collision*/sensor): in SLua
+    // il parametro "integer" (total_number/num_detected) diventa una lista
+    // "events" e va sostituito con #events. Solo touch_start/touch/touch_end
+    // sono confermati da fonti ufficiali; gli altri sono un'estrapolazione
+    // per analogia (stessa famiglia llDetected* in LSL) e vengono segnalati.
+    const DETECTION_EVENTS = new Set([
+      'touch_start', 'touch', 'touch_end',
+      'collision_start', 'collision', 'collision_end', 'sensor'
+    ]);
+    const CONFIRMED_DETECTION_EVENTS = new Set(['touch_start', 'touch', 'touch_end']);
+
+    // funzione state(): cambia stato usando LLEvents per (dis)registrare
+    // dinamicamente gli handler, esattamente come richiede il vero runtime
+    // SLua (non esiste "auto-detect" di funzioni globali con nome magico)
+    lines.push('local _currentState = {}');
+    lines.push('local function state(newState)');
+    lines.push('    if newState ~= _currentState then');
+    lines.push('        if _currentState and _currentState.state_exit then');
+    lines.push('            _currentState.state_exit()');
+    lines.push('        end');
+    lines.push('        for _, eventName in LLEvents:eventNames() do');
+    lines.push('            for _, handler in LLEvents:listeners(eventName) do');
+    lines.push('                LLEvents:off(eventName, handler)');
+    lines.push('            end');
+    lines.push('        end');
+    lines.push('        for eventName, handler in newState do');
+    lines.push('            if eventName ~= "state_entry" and eventName ~= "state_exit" then');
+    lines.push('                LLEvents:on(eventName, handler)');
+    lines.push('            end');
+    lines.push('        end');
+    lines.push('        _currentState = newState');
+    lines.push('        if _currentState.state_entry then');
+    lines.push('            _currentState.state_entry()');
+    lines.push('        end');
+    lines.push('    end');
+    lines.push('end');
     lines.push('');
+
+    // ogni stato LSL diventa una tabella locale propria (non piu' una entry
+    // in una tabella "states" indicizzata da stringa)
+    const stateNames = ast.states.map(s => this.safeName(s.name));
+    lines.push(`local ${stateNames.join(', ')} = ${stateNames.map(() => '{}').join(', ')}`);
+    lines.push('');
+
     for (const s of ast.states) {
-      lines.push(`states.${this.safeName(s.name)} = {`);
-      this.indentLevel++;
+      const stName = this.safeName(s.name);
       for (const ev of s.events) {
         this.pushScope();
-        for (const p of ev.params) this.declareVar(p.name, p.type);
-        lines.push(this.indent() + `${ev.name} = function(${ev.params.map(p => this.safeName(p.name)).join(', ')})`);
-        this.indentLevel++;
+        const isDetection = DETECTION_EVENTS.has(ev.name) && ev.params.length === 1;
+        if (isDetection) {
+          const countParamName = this.safeName(ev.params[0].name);
+          lines.push(`function ${stName}.${ev.name}(events)`);
+          this.indentLevel++;
+          lines.push(this.indent() + `local ${countParamName} = #events`);
+          this.declareVar(ev.params[0].name, ev.params[0].type);
+          if (!CONFIRMED_DETECTION_EVENTS.has(ev.name)) {
+            this.warn(`Event '${ev.name}' in state '${s.name}': assumed (by analogy with touch_start) that it receives an "events" list instead of a plain count — this specific event isn't confirmed against SLua's real signature, please verify.`);
+          }
+          if (ev.body.body.some(s => this.containsDetectedCall(s))) {
+            this.warn(`Event '${ev.name}' in state '${s.name}': uses llDetected*() functions, which need to be rewritten by hand to use the new "events" list (e.g. events[i]:getKey()) — these calls were left as-is and are almost certainly wrong now.`);
+          }
+        } else {
+          const paramNames = ev.params.map(p => this.safeName(p.name));
+          for (const p of ev.params) this.declareVar(p.name, p.type);
+          lines.push(`function ${stName}.${ev.name}(${paramNames.join(', ')})`);
+          this.indentLevel++;
+        }
         for (const stmt of ev.body.body) lines.push(this.genStatement(stmt));
         this.indentLevel--;
-        lines.push(this.indent() + 'end,');
+        lines.push('end');
+        lines.push('');
         this.popScope();
       }
-      this.indentLevel--;
-      lines.push('}');
-      lines.push('');
     }
 
-    // dispatcher: una funzione globale per ogni evento incontrato, che
-    // inoltra alla tabella dello stato corrente (se lo stato la definisce)
-    for (const evName of eventNames) {
-      lines.push(`function ${evName}(...)`);
-      lines.push(this.indent() + `    local handler = states[current_state].${evName}`);
-      lines.push(this.indent() + `    if handler then handler(...) end`);
-      lines.push('end');
-      lines.push('');
-    }
-
-    // funzione state(): gestisce state_exit / state_entry sul cambio stato
-    lines.push('function state(new_state)');
-    lines.push('    local cur = states[current_state]');
-    lines.push('    if cur and cur.state_exit then cur.state_exit() end');
-    lines.push('    current_state = new_state');
-    lines.push('    local nw = states[current_state]');
-    lines.push('    if nw and nw.state_entry then nw.state_entry() end');
-    lines.push('end');
-    lines.push('');
-
-    // avvio: chiama lo state_entry dello stato di default, se esiste
-    lines.push('if states.default and states.default.state_entry then');
-    lines.push('    states.default.state_entry()');
-    lines.push('end');
+    // avvio: entra nello stato "default" (registra i suoi handler e chiama
+    // il suo state_entry, tramite la funzione state() definita sopra)
+    lines.push(`state(${this.safeName('default')})`);
 
     // header, costruito ora che sappiamo se l'helper di concatenazione liste
     // e' stato effettivamente usato da qualche parte nel corpo generato
@@ -1150,7 +1201,7 @@ class CodeGen {
         this.warn(`Label '@${stmt.label}' found: manually check the goto/::${stmt.label}:: usage in Luau.`);
         return `${ind}::${stmt.label}::`;
       case 'StateChange':
-        return `${ind}state("${stmt.name}")`;
+        return `${ind}state(${this.safeName(stmt.name)})`;
       default:
         return `${ind}-- nodo statement non gestito: ${stmt.kind}`;
     }
