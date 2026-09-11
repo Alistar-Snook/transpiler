@@ -332,7 +332,7 @@
 <footer>
   Runs entirely in your browser: no script is ever sent to a server. Anything the
   transpiler can't handle is flagged in the warnings, not silently guessed.
-  <br><span style="opacity:0.55;">Build: 2026-09-11 11:28 UTC</span>
+  <br><span style="opacity:0.55;">Build: 2026-09-11 11:43 UTC</span>
 </footer>
 <script>
 (function() {
@@ -1033,8 +1033,8 @@ class CodeGen {
       case 'float': return '0.0';
       case 'string': return '""';
       case 'key': return '""';
-      case 'vector': return 'vector.new(0, 0, 0)';
-      case 'rotation': return 'rotation.new(0, 0, 0, 1)';
+      case 'vector': return 'vector(0, 0, 0)';
+      case 'rotation': return 'rotation(0, 0, 0, 1)';
       case 'list': return '{}';
       default: return 'nil';
     }
@@ -1052,6 +1052,20 @@ class CodeGen {
     lines.push('end');
     this.popScope();
     return lines.join('\n');
+  }
+
+  // genera le istruzioni di un blocco SENZA il wrapper do...end: da usare
+  // quando il costrutto genitore (if/while/for) fornisce gia' il proprio
+  // blocco Lua, per evitare un inutile "do...end" annidato dentro "then...end"
+  genBlockBody(stmt) {
+    if (stmt.kind === 'Block') {
+      this.pushScope();
+      const body = stmt.body.map(s => this.genStatement(s)).join('\n');
+      this.popScope();
+      return body;
+    }
+    // corpo senza graffe (una singola istruzione, come "if (x) foo();" in LSL)
+    return this.genStatement(stmt);
   }
 
   // ---------- Statement ----------
@@ -1081,7 +1095,7 @@ class CodeGen {
       case 'If': {
         let out = `${ind}if ${this.genExpr(stmt.test)} then\n`;
         this.indentLevel++;
-        out += this.genStatement(stmt.cons) + '\n';
+        out += this.genBlockBody(stmt.cons) + '\n';
         this.indentLevel--;
         if (stmt.alt) {
           if (stmt.alt.kind === 'If') {
@@ -1091,7 +1105,7 @@ class CodeGen {
           }
           out += `${ind}else\n`;
           this.indentLevel++;
-          out += this.genStatement(stmt.alt) + '\n';
+          out += this.genBlockBody(stmt.alt) + '\n';
           this.indentLevel--;
         }
         out += `${ind}end`;
@@ -1100,7 +1114,7 @@ class CodeGen {
       case 'While': {
         let out = `${ind}while ${this.genExpr(stmt.test)} do\n`;
         this.indentLevel++;
-        out += this.genStatement(stmt.body) + '\n';
+        out += this.genBlockBody(stmt.body) + '\n';
         this.indentLevel--;
         out += `${ind}end`;
         return out;
@@ -1108,7 +1122,7 @@ class CodeGen {
       case 'DoWhile': {
         let out = `${ind}repeat\n`;
         this.indentLevel++;
-        out += this.genStatement(stmt.body) + '\n';
+        out += this.genBlockBody(stmt.body) + '\n';
         this.indentLevel--;
         // repeat...until exits when the condition is TRUE in Lua,
         // while LSL's do-while continues while it's true -> negate the condition
@@ -1121,7 +1135,7 @@ class CodeGen {
         let out = `${ind}${initStr}\n`;
         out += `${ind}while ${stmt.test ? this.genExpr(stmt.test) : 'true'} do\n`;
         this.indentLevel++;
-        out += this.genStatement(stmt.body) + '\n';
+        out += this.genBlockBody(stmt.body) + '\n';
         if (updateStr) out += `${this.indent()}${updateStr}\n`;
         this.indentLevel--;
         out += `${ind}end`;
@@ -1166,9 +1180,9 @@ class CodeGen {
       case 'ListLiteral':
         return `{ ${e.items.map(i => this.genExpr(i)).join(', ')} }`;
       case 'VectorLiteral':
-        return `vector.new(${e.items.map(i => this.genExpr(i)).join(', ')})`;
+        return `vector(${e.items.map(i => this.genExpr(i)).join(', ')})`;
       case 'RotationLiteral':
-        return `rotation.new(${e.items.map(i => this.genExpr(i)).join(', ')})`;
+        return `rotation(${e.items.map(i => this.genExpr(i)).join(', ')})`;
       case 'Member': {
         // vector/rotation components: .x .y .z .s stay unchanged
         return `${this.genExpr(e.object)}.${e.prop}`;
