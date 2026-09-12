@@ -332,7 +332,7 @@
 <footer>
   Runs entirely in your browser: no script is ever sent to a server. Anything the
   transpiler can't handle is flagged in the warnings, not silently guessed.
-  <br><span style="opacity:0.55;">Build: 2026-09-11 18:26 UTC</span>
+  <br><span style="opacity:0.55;">Build: 2026-09-12 09:27 UTC</span>
 </footer>
 <script>
 (function() {
@@ -981,7 +981,13 @@ class CodeGen {
     // handler sono attivi: in pratica quel metodo non esiste nella beta SLua
     // attuale ("attempt to call missing method 'listeners'"), quindi teniamo
     // noi stessi il conto di cosa abbiamo registrato, per poterlo de-registrare
-    // usando solo LLEvents:on/:off (le uniche due funzioni confermate).
+    // usando solo LLEvents:on/:off.
+    // Difesa aggiuntiva: ogni handler registrato controlla lui stesso, quando
+    // scatta, se lo stato per cui e' stato registrato e' ancora quello attivo.
+    // Cosi', anche se LLEvents:off non rimuove davvero il vecchio handler (in
+    // pratica si e' visto succedere: eventi duplicati sia dallo stato vecchio
+    // che dal nuovo sullo stesso tocco), l'handler "rimasto appeso" non fa
+    // piu' nulla di sbagliato, invece di eseguire comunque la sua logica.
     lines.push('local _currentState = {}');
     lines.push('local _activeHandlers = {}');
     lines.push('local function state(newState)');
@@ -995,8 +1001,14 @@ class CodeGen {
     lines.push('        _activeHandlers = {}');
     lines.push('        for eventName, handler in newState do');
     lines.push('            if eventName ~= "state_entry" and eventName ~= "state_exit" then');
-    lines.push('                LLEvents:on(eventName, handler)');
-    lines.push('                _activeHandlers[#_activeHandlers + 1] = { eventName = eventName, handler = handler }');
+    lines.push('                local ownerState = newState');
+    lines.push('                local guarded = function(...)');
+    lines.push('                    if _currentState == ownerState then');
+    lines.push('                        return handler(...)');
+    lines.push('                    end');
+    lines.push('                end');
+    lines.push('                LLEvents:on(eventName, guarded)');
+    lines.push('                _activeHandlers[#_activeHandlers + 1] = { eventName = eventName, handler = guarded }');
     lines.push('            end');
     lines.push('        end');
     lines.push('        _currentState = newState');
