@@ -332,7 +332,7 @@
 <footer>
   Runs entirely in your browser: no script is ever sent to a server. Anything the
   transpiler can't handle is flagged in the warnings, not silently guessed.
-  <br><span style="opacity:0.55;">Build: 2026-09-12 09:27 UTC</span>
+  <br><span style="opacity:0.55;">Build: 2026-09-12 15:42 UTC</span>
 </footer>
 <script>
 (function() {
@@ -963,6 +963,12 @@ class CodeGen {
     const eventNames = new Set();
     for (const s of ast.states) for (const e of s.events) eventNames.add(e.name);
 
+    // se lo script non ha nessun blocco di stato (es. una libreria di sole
+    // funzioni di supporto, senza "default { ... }"), non generiamo affatto
+    // l'impalcatura della macchina a stati: non servirebbe a nulla e
+    // produrrebbe codice rotto (es. "local  = " con nome vuoto)
+    if (ast.states.length > 0) {
+
     // eventi LSL "a lista di rilevamento" (touch*/collision*/sensor): in SLua
     // il parametro "integer" (total_number/num_detected) diventa una lista
     // "events" e va sostituito con #events. Solo touch_start/touch/touch_end
@@ -1059,6 +1065,8 @@ class CodeGen {
     // avvio: entra nello stato "default" (registra i suoi handler e chiama
     // il suo state_entry, tramite la funzione state() definita sopra)
     lines.push(`state(${this.safeName('default')})`);
+
+    } // fine "if (ast.states.length > 0)"
 
     // header, costruito ora che sappiamo se l'helper di concatenazione liste
     // e' stato effettivamente usato da qualche parte nel corpo generato
@@ -1234,6 +1242,16 @@ class CodeGen {
       const t = this.genExpr(expr.target);
       const op = expr.op === '++' ? '+' : '-';
       return `${t} = (${t} ${op} 1)`;
+    }
+    // in Lua solo le chiamate a funzione e le assegnazioni sono istruzioni
+    // valide da sole: un'espressione "nuda" come un confronto (es. "a == b;")
+    // e' legale in LSL/C come no-op, ma non compila in Lua. Capita quasi
+    // sempre per un refuso tipo "==" al posto di "=" (assegnazione mancata):
+    // la teniamo cosi' com'e' (non correggiamo la logica dell'utente) ma la
+    // rendiamo sintatticamente valida e segnaliamo il sospetto.
+    if (expr.kind !== 'Call' && expr.kind !== 'Assign') {
+      this.warn(`Statement "${this.genExpr(expr)}" has no effect (it's just a comparison/expression, not an assignment or function call) — this is very likely a bug already present in the original LSL (e.g. '==' typed instead of '=' for an assignment). Left as a harmless no-op instead of crashing the generated script.`);
+      return `local _ = (${this.genExpr(expr)})`;
     }
     return this.genExpr(expr);
   }
