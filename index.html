@@ -332,7 +332,7 @@
 <footer>
   Runs entirely in your browser: no script is ever sent to a server. Anything the
   transpiler can't handle is flagged in the warnings, not silently guessed.
-  <br><span style="opacity:0.55;">Build: 2026-09-14 11:33 UTC</span>
+  <br><span style="opacity:0.55;">Build: 2026-09-14 19:00 UTC</span>
 </footer>
 <script>
 (function() {
@@ -886,6 +886,7 @@ class CodeGen {
     this.scopes = [new Map()]; // scope globale in fondo allo stack
     this.functionReturnTypes = new Map(); // nome funzione utente -> tipo dichiarato
     this.usedListConcat = false; // true se lsl_listconcat viene davvero usato
+    this.usedTimer = false; // true se llSetTimerEvent viene davvero usato
   }
   indent() { return '    '.repeat(this.indentLevel); }
   warn(msg) { this.warnings.push(msg); }
@@ -1021,7 +1022,7 @@ class CodeGen {
     lines.push('        end');
     lines.push('        _activeHandlers = {}');
     lines.push('        for eventName, handler in newState do');
-    lines.push('            if eventName ~= "state_entry" and eventName ~= "state_exit" then');
+    lines.push('            if eventName ~= "state_entry" and eventName ~= "state_exit" and eventName ~= "timer" then');
     lines.push('                local ownerState = newState');
     lines.push('                local guarded = function(...)');
     lines.push('                    if _currentState == ownerState then');
@@ -1044,27 +1045,12 @@ class CodeGen {
     // in una tabella "states" indicizzata da stringa)
     const stateNames = ast.states.map(s => this.safeName(s.name));
     lines.push(`${stateNames.join(', ')} = ${stateNames.map(() => '{}').join(', ')}`);
+    lines.push('_timerHandle = nil'); // handle LLTimers per l'unico timer "stile LSL" (vedi genCall/llSetTimerEvent)
     lines.push('');
 
-    // 'timer' e llSetTimerEvent: la guida ufficiale "From LSL to Lua" mostra
-    // un meccanismo completamente diverso per i timer, LLTimers:every(...),
-    // non la registrazione di 'timer' via LLEvents:on come per gli altri
-    // eventi. Non lo implementiamo ancora automaticamente: segnaliamo.
-    let timerWarned = false;
-    for (const s of ast.states) {
-      for (const ev of s.events) {
-        if (!timerWarned && (ev.name === 'timer' || ev.body.body.some(st => this.containsCallNamed(st, 'llSetTimerEvent')))) {
-          this.warn(`This script uses 'timer'/llSetTimerEvent: SLua's real timer mechanism is a separate "LLTimers:every(interval, callback)" API, not registering 'timer' through LLEvents like other events. This was NOT automatically rewritten — please check the "Timers" section of the official "From LSL to Lua" guide and adjust by hand.`);
-          timerWarned = true;
-        }
-      }
-    }
-    for (const f of ast.functions) {
-      if (!timerWarned && f.body.body.some(st => this.containsCallNamed(st, 'llSetTimerEvent'))) {
-        this.warn(`This script uses llSetTimerEvent: SLua's real timer mechanism is a separate "LLTimers:every(interval, callback)" API. This was NOT automatically rewritten — please check the "Timers" section of the official "From LSL to Lua" guide and adjust by hand.`);
-        timerWarned = true;
-      }
-    }
+    // 'timer'/llSetTimerEvent: gestiti a parte tramite LLTimers (vedi
+    // genCall) invece che tramite la normale registrazione LLEvents,
+    // perche' SLua usa un'API completamente diversa per i timer.
 
     for (const s of ast.states) {
       const stName = this.safeName(s.name);
@@ -1202,8 +1188,29 @@ class CodeGen {
           return `${ind}local ${this.safeName(d.name)} = ${val}`;
         }).join('\n');
       }
-      case 'ExprStmt':
+      case 'ExprStmt': {
+        // llSetTimerEvent(x): generato come istruzione multi-riga vera e
+        // propria (if/else), non come espressione IIFE - qui e' sempre a
+        // livello di statement, ed evita la nota ambiguita' di Lua quando
+        // una riga inizia con '(' subito dopo un'altra istruzione
+        const expr = stmt.expr;
+        if (expr.kind === 'Call' && expr.callee.kind === 'Ident'
+          && expr.callee.name === 'llSetTimerEvent' && expr.args.length === 1) {
+          this.usedTimer = true;
+          const interval = this.genExpr(expr.args[0]);
+          let out = `${ind}if _timerHandle then LLTimers:off(_timerHandle) end\n`;
+          out += `${ind}if (${interval}) > 0 then\n`;
+          out += `${ind}    _timerHandle = LLTimers:every((${interval}), function(scheduled_time)\n`;
+          out += `${ind}        local h = _currentState and _currentState.timer\n`;
+          out += `${ind}        if h then h() end\n`;
+          out += `${ind}    end)\n`;
+          out += `${ind}else\n`;
+          out += `${ind}    _timerHandle = nil\n`;
+          out += `${ind}end`;
+          return out;
+        }
         return `${ind}${this.genExprStatement(stmt.expr)}`;
+      }
       case 'If': {
         let out = `${ind}if ${this.genExpr(stmt.test)} then\n`;
         this.indentLevel++;
@@ -1463,6 +1470,14 @@ class CodeGen {
     // llGetListLength(x) -> #x
     if (e.callee.kind === 'Ident' && e.callee.name === 'llGetListLength' && e.args.length === 1) {
       return `#${this.genExpr(e.args[0])}`;
+    }
+    // llSetTimerEvent(interval): il caso normale (usato come istruzione a
+    // se' stante) e' gestito direttamente in genStatement/ExprStmt con una
+    // forma multi-riga pulita. Se invece compare annidato dentro un'altra
+    // espressione (inusuale in LSL), non proviamo a incastrarlo: segnaliamo.
+    if (e.callee.kind === 'Ident' && e.callee.name === 'llSetTimerEvent' && e.args.length === 1) {
+      this.warn(`'llSetTimerEvent' used nested inside a larger expression: this wasn't translated (only the common case of a standalone statement is supported) — please rewrite it as its own statement.`);
+      return `--[[ llSetTimerEvent used inside an expression, not translated ]] nil`;
     }
     const args = e.args.map(a => this.genExpr(a)).join(', ');
     // chiamata a funzione ll* -> namespace ll.NomeFunzione
