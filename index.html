@@ -332,7 +332,7 @@
 <footer>
   Runs entirely in your browser: no script is ever sent to a server. Anything the
   transpiler can't handle is flagged in the warnings, not silently guessed.
-  <br><span style="opacity:0.55;">Build: 2026-09-12 15:42 UTC</span>
+  <br><span style="opacity:0.55;">Build: 2026-09-14 11:33 UTC</span>
 </footer>
 <script>
 (function() {
@@ -908,6 +908,24 @@ class CodeGen {
   // ricerca ricorsiva nell'AST di una chiamata a una funzione llDetected*
   // (llDetectedKey, llDetectedName, ecc.), per segnalare il warning sulla
   // lista "events" solo quando serve davvero, non su ogni evento di rilevamento
+  // ricerca ricorsiva generica nell'AST di una chiamata a una funzione il
+  // cui nome (dopo aver tolto il prefisso "ll") corrisponde a needle
+  containsCallNamed(node, needle) {
+    if (!node || typeof node !== 'object') return false;
+    if (node.kind === 'Call' && node.callee && node.callee.kind === 'Ident'
+      && node.callee.name === needle) return true;
+    for (const key in node) {
+      if (key === 'kind') continue;
+      const val = node[key];
+      if (Array.isArray(val)) {
+        for (const item of val) if (this.containsCallNamed(item, needle)) return true;
+      } else if (val && typeof val === 'object') {
+        if (this.containsCallNamed(val, needle)) return true;
+      }
+    }
+    return false;
+  }
+
   containsDetectedCall(node) {
     if (!node || typeof node !== 'object') return false;
     if (node.kind === 'Call' && node.callee && node.callee.kind === 'Ident'
@@ -938,22 +956,19 @@ class CodeGen {
     // dentro genBinary quando serve) e possiamo includerlo solo in quel caso
     const lines = [];
 
-    // variabili globali
+    // variabili globali (in SLua le variabili a livello di script sono
+    // globali VERE, senza 'local' - confermato dalla guida ufficiale
+    // "From LSL to Lua": "Script-level variables (no 'local') are global")
     for (const g of ast.globals) {
       this.declareVar(g.name, g.varType);
       lines.push(this.genGlobalVarDecl(g));
     }
     if (ast.globals.length) lines.push('');
 
-    // dichiarazioni forward per tutte le funzioni globali (permette la
-    // mutua ricorsione, dato che in Lua le funzioni vanno dichiarate
-    // prima di essere usate)
-    if (ast.functions.length) {
-      for (const f of ast.functions) lines.push(`local ${this.safeName(f.name)}`);
-      lines.push('');
-    }
-
-    // corpo delle funzioni globali
+    // funzioni globali: nessuna dichiarazione forward necessaria. Essendo
+    // funzioni globali vere (non 'local'), si risolvono dinamicamente a
+    // runtime indipendentemente dall'ordine testuale in cui compaiono,
+    // quindi la mutua ricorsione funziona senza bisogno di pre-dichiararle.
     for (const f of ast.functions) {
       lines.push(this.genFunctionAssign(f));
       lines.push('');
@@ -994,9 +1009,9 @@ class CodeGen {
     // pratica si e' visto succedere: eventi duplicati sia dallo stato vecchio
     // che dal nuovo sullo stesso tocco), l'handler "rimasto appeso" non fa
     // piu' nulla di sbagliato, invece di eseguire comunque la sua logica.
-    lines.push('local _currentState = {}');
-    lines.push('local _activeHandlers = {}');
-    lines.push('local function state(newState)');
+    lines.push('_currentState = {}');
+    lines.push('_activeHandlers = {}');
+    lines.push('function state(newState)');
     lines.push('    if newState ~= _currentState then');
     lines.push('        if _currentState and _currentState.state_exit then');
     lines.push('            _currentState.state_exit()');
@@ -1028,8 +1043,28 @@ class CodeGen {
     // ogni stato LSL diventa una tabella locale propria (non piu' una entry
     // in una tabella "states" indicizzata da stringa)
     const stateNames = ast.states.map(s => this.safeName(s.name));
-    lines.push(`local ${stateNames.join(', ')} = ${stateNames.map(() => '{}').join(', ')}`);
+    lines.push(`${stateNames.join(', ')} = ${stateNames.map(() => '{}').join(', ')}`);
     lines.push('');
+
+    // 'timer' e llSetTimerEvent: la guida ufficiale "From LSL to Lua" mostra
+    // un meccanismo completamente diverso per i timer, LLTimers:every(...),
+    // non la registrazione di 'timer' via LLEvents:on come per gli altri
+    // eventi. Non lo implementiamo ancora automaticamente: segnaliamo.
+    let timerWarned = false;
+    for (const s of ast.states) {
+      for (const ev of s.events) {
+        if (!timerWarned && (ev.name === 'timer' || ev.body.body.some(st => this.containsCallNamed(st, 'llSetTimerEvent')))) {
+          this.warn(`This script uses 'timer'/llSetTimerEvent: SLua's real timer mechanism is a separate "LLTimers:every(interval, callback)" API, not registering 'timer' through LLEvents like other events. This was NOT automatically rewritten — please check the "Timers" section of the official "From LSL to Lua" guide and adjust by hand.`);
+          timerWarned = true;
+        }
+      }
+    }
+    for (const f of ast.functions) {
+      if (!timerWarned && f.body.body.some(st => this.containsCallNamed(st, 'llSetTimerEvent'))) {
+        this.warn(`This script uses llSetTimerEvent: SLua's real timer mechanism is a separate "LLTimers:every(interval, callback)" API. This was NOT automatically rewritten — please check the "Timers" section of the official "From LSL to Lua" guide and adjust by hand.`);
+        timerWarned = true;
+      }
+    }
 
     for (const s of ast.states) {
       const stName = this.safeName(s.name);
@@ -1101,7 +1136,7 @@ class CodeGen {
   genGlobalVarDecl(g) {
     const name = this.safeName(g.name);
     const init = g.init ? this.genExpr(g.init) : this.defaultValueFor(g.varType);
-    return `local ${name} = ${init}`;
+    return `${name} = ${init}`;
   }
 
   defaultValueFor(type) {
