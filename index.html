@@ -286,7 +286,7 @@
 <header>
   <div>
     <h1>LSL <span class="arrow">&rarr;</span> SLua Transpiler</h1>
-    <p>Paste an LSL script, hit "Transpile" &mdash; review the SLua draft before using it in-world.</p>
+    <p>Paste an LSL script, hit "Transpile" and review the SLua draft before using it in-world.</p>
   </div>
   <a class="report-link" href="report-bug.html">Report a bug</a>
 </header>
@@ -332,7 +332,7 @@
 <footer>
   Runs entirely in your browser: no script is ever sent to a server. Anything the
   transpiler can't handle is flagged in the warnings, not silently guessed.
-  <br><span style="opacity:0.55;">Build: 2026-09-15 10:32 UTC</span>
+  <br><span style="opacity:0.55;">Build: 2026-09-15 18:09 UTC</span>
 </footer>
 <script>
 (function() {
@@ -607,6 +607,9 @@ class Parser {
   }
 
   parseStatement() {
+    // ';' vuoto (istruzione nulla): LSL/Mono lo tollera come no-op (tipico
+    // refuso da doppio ';' o simili), quindi lo accettiamo anche noi
+    if (this.atPunct(';')) { this.advance(); return { kind: 'Empty' }; }
     if (this.atPunct('{')) return this.parseBlock();
     if (this.atKeyword('if')) return this.parseIf();
     if (this.atKeyword('while')) return this.parseWhile();
@@ -1206,6 +1209,8 @@ class CodeGen {
       case 'Label':
         this.warn(`Label '@${stmt.label}' found: manually check the goto/::${stmt.label}:: usage in Luau.`);
         return `${ind}::${stmt.label}::`;
+      case 'Empty':
+        return ''; // ';' vuoto: nessun effetto, non genera nulla
       case 'StateChange':
         return `${ind}state(${this.safeName(stmt.name)})`;
       default:
