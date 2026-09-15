@@ -332,7 +332,7 @@
 <footer>
   Runs entirely in your browser: no script is ever sent to a server. Anything the
   transpiler can't handle is flagged in the warnings, not silently guessed.
-  <br><span style="opacity:0.55;">Build: 2026-09-14 19:00 UTC</span>
+  <br><span style="opacity:0.55;">Build: 2026-09-15 10:32 UTC</span>
 </footer>
 <script>
 (function() {
@@ -906,43 +906,6 @@ class CodeGen {
     return LUA_RESERVED.has(name) ? name + '_t' : name;
   }
 
-  // ricerca ricorsiva nell'AST di una chiamata a una funzione llDetected*
-  // (llDetectedKey, llDetectedName, ecc.), per segnalare il warning sulla
-  // lista "events" solo quando serve davvero, non su ogni evento di rilevamento
-  // ricerca ricorsiva generica nell'AST di una chiamata a una funzione il
-  // cui nome (dopo aver tolto il prefisso "ll") corrisponde a needle
-  containsCallNamed(node, needle) {
-    if (!node || typeof node !== 'object') return false;
-    if (node.kind === 'Call' && node.callee && node.callee.kind === 'Ident'
-      && node.callee.name === needle) return true;
-    for (const key in node) {
-      if (key === 'kind') continue;
-      const val = node[key];
-      if (Array.isArray(val)) {
-        for (const item of val) if (this.containsCallNamed(item, needle)) return true;
-      } else if (val && typeof val === 'object') {
-        if (this.containsCallNamed(val, needle)) return true;
-      }
-    }
-    return false;
-  }
-
-  containsDetectedCall(node) {
-    if (!node || typeof node !== 'object') return false;
-    if (node.kind === 'Call' && node.callee && node.callee.kind === 'Ident'
-      && /^llDetected/.test(node.callee.name)) return true;
-    for (const key in node) {
-      if (key === 'kind') continue;
-      const val = node[key];
-      if (Array.isArray(val)) {
-        for (const item of val) if (this.containsDetectedCall(item)) return true;
-      } else if (val && typeof val === 'object') {
-        if (this.containsDetectedCall(val)) return true;
-      }
-    }
-    return false;
-  }
-
   genProgram(ast) {
     // registra i tipi di ritorno delle funzioni utente prima di generare
     // qualsiasi cosa, cosi' le chiamate a queste funzioni sono classificabili
@@ -986,16 +949,6 @@ class CodeGen {
     if (ast.states.length > 0) {
 
     // eventi LSL "a lista di rilevamento" (touch*/collision*/sensor): in SLua
-    // il parametro "integer" (total_number/num_detected) diventa una lista
-    // "events" e va sostituito con #events. Solo touch_start/touch/touch_end
-    // sono confermati da fonti ufficiali; gli altri sono un'estrapolazione
-    // per analogia (stessa famiglia llDetected* in LSL) e vengono segnalati.
-    const DETECTION_EVENTS = new Set([
-      'touch_start', 'touch', 'touch_end',
-      'collision_start', 'collision', 'collision_end', 'sensor'
-    ]);
-    const CONFIRMED_DETECTION_EVENTS = new Set(['touch_start', 'touch', 'touch_end']);
-
     // funzione state(): cambia stato usando LLEvents per (dis)registrare
     // dinamicamente gli handler, esattamente come richiede il vero runtime
     // SLua (non esiste "auto-detect" di funzioni globali con nome magico).
@@ -1056,25 +1009,10 @@ class CodeGen {
       const stName = this.safeName(s.name);
       for (const ev of s.events) {
         this.pushScope();
-        const isDetection = DETECTION_EVENTS.has(ev.name) && ev.params.length === 1;
-        if (isDetection) {
-          const countParamName = this.safeName(ev.params[0].name);
-          lines.push(`function ${stName}.${ev.name}(events)`);
-          this.indentLevel++;
-          lines.push(this.indent() + `local ${countParamName} = #events`);
-          this.declareVar(ev.params[0].name, ev.params[0].type);
-          if (!CONFIRMED_DETECTION_EVENTS.has(ev.name)) {
-            this.warn(`Event '${ev.name}' in state '${s.name}': assumed (by analogy with touch_start) that it receives an "events" list instead of a plain count — this specific event isn't confirmed against SLua's real signature, please verify.`);
-          }
-          if (ev.body.body.some(s => this.containsDetectedCall(s))) {
-            this.warn(`Event '${ev.name}' in state '${s.name}': uses llDetected*() functions, which need to be rewritten by hand to use the new "events" list (e.g. events[i]:getKey()) — these calls were left as-is and are almost certainly wrong now.`);
-          }
-        } else {
-          const paramNames = ev.params.map(p => this.safeName(p.name));
-          for (const p of ev.params) this.declareVar(p.name, p.type);
-          lines.push(`function ${stName}.${ev.name}(${paramNames.join(', ')})`);
-          this.indentLevel++;
-        }
+        const paramNames = ev.params.map(p => this.safeName(p.name));
+        for (const p of ev.params) this.declareVar(p.name, p.type);
+        lines.push(`function ${stName}.${ev.name}(${paramNames.join(', ')})`);
+        this.indentLevel++;
         for (const stmt of ev.body.body) lines.push(this.genStatement(stmt));
         this.indentLevel--;
         lines.push('end');
